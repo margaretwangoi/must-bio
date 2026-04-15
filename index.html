@@ -1,0 +1,1197 @@
+<!DOCTYPE html>
+<!--
+  must-bio/index.html  — v3
+  Modes:
+    ?mode=fingerprint  — WebAuthn registration (navigator.credentials.create)
+    ?mode=face         — Camera face capture
+    ?mode=verify       — WebAuthn assertion for attendance (navigator.credentials.get)
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MUST Biometric</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f0fdf4; min-height: 100vh;
+      display: flex; align-items: flex-start; justify-content: center; padding: 20px;
+    }
+    .card {
+      background: white; border-radius: 16px; padding: 24px 20px;
+      max-width: 420px; width: 100%;
+      box-shadow: 0 8px 32px rgba(26,107,60,0.15); text-align: center;
+    }
+    .logo { width: 56px; height: 56px; border-radius: 50%; margin: 0 auto 12px; display: block; }
+    h1   { font-size: 1.15rem; color: #1a6b3c; margin-bottom: 2px; }
+    .sub { font-size: 0.82rem; color: #6b7280; margin-bottom: 16px; }
+
+    .student-card {
+      background: #f0fdf4; border: 1.5px solid #22c55e; border-radius: 10px;
+      padding: 10px 14px; margin-bottom: 16px; text-align: left; display: none;
+    }
+    .student-card .name   { font-weight: 700; color: #1a6b3c; font-size: 1rem; }
+    .student-card .number { font-size: 0.82rem; color: #6b7280; }
+
+    /* Sensor ring */
+    .sensor-wrap {
+      width: 110px; height: 110px; border-radius: 50%;
+      border: 3px solid #d1d5db; margin: 0 auto 16px;
+      display: flex; align-items: center; justify-content: center;
+      background: white; transition: all .3s;
+    }
+    .sensor-wrap.scanning { border-color: #1a6b3c; animation: pulse 1.4s ease-in-out infinite; }
+    .sensor-wrap.success  { border-color: #22c55e; background: rgba(34,197,94,.05); }
+    .sensor-wrap.error    { border-color: #ef4444; animation: shake .4s ease; }
+    @keyframes pulse {
+      0%,100%{ box-shadow: 0 0 0 6px rgba(26,107,60,.08),0 0 0 12px rgba(26,107,60,.04); }
+      50%    { box-shadow: 0 0 0 10px rgba(26,107,60,.14),0 0 0 20px rgba(26,107,60,.07); }
+    }
+    @keyframes shake { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-6px)} 75%{transform:translateX(6px)} }
+    .fp-icon { font-size: 3rem; color: #9ca3af; transition: color .3s; }
+    .sensor-wrap.scanning .fp-icon { color: #1a6b3c; }
+    .sensor-wrap.success  .fp-icon { color: #22c55e; }
+    .sensor-wrap.error    .fp-icon { color: #ef4444; }
+
+    /* Camera */
+    .camera-wrap {
+      position: relative; border-radius: 12px; overflow: hidden;
+      background: #000; margin-bottom: 12px; display: none;
+    }
+    .camera-wrap video { display: block; width: 100%; max-height: 340px; object-fit: cover; }
+    .face-oval-overlay {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center; pointer-events: none;
+    }
+    .face-oval {
+      width: 52%; aspect-ratio: 3/4; border-radius: 50%;
+      border: 3px solid rgba(255,255,255,.7);
+      box-shadow: 0 0 0 9999px rgba(0,0,0,.45); transition: border-color .3s, box-shadow .3s;
+    }
+    .face-oval.aligned {
+      border-color: #22c55e !important;
+      box-shadow: 0 0 0 9999px rgba(0,0,0,.45), 0 0 16px rgba(34,197,94,.5) !important;
+    }
+    .face-instr {
+      position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,.6); color: #fff; padding: 4px 12px;
+      border-radius: 20px; font-size: .78rem; font-weight: 600;
+      white-space: nowrap; backdrop-filter: blur(4px);
+    }
+    .countdown-overlay {
+      display: none; position: absolute; inset: 0; border-radius: 12px;
+      background: rgba(0,0,0,.5); align-items: center; justify-content: center;
+    }
+    .cd-ring { position: relative; width: 76px; height: 76px; }
+    .cd-ring svg { transform: rotate(-90deg); }
+    .cd-ring .ring-bg   { fill: none; stroke: rgba(255,255,255,.2); stroke-width: 6; }
+    .cd-ring .ring-fill { fill: none; stroke: white; stroke-width: 6; stroke-linecap: round;
+                          stroke-dasharray: 220; stroke-dashoffset: 220; transition: stroke-dashoffset 1s linear; }
+    .cd-num { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+              color: white; font-size: 2rem; font-weight: 900; }
+    .preview-wrap { display: none; margin-bottom: 12px; }
+    .preview-wrap img { width: 100%; max-height: 300px; object-fit: cover;
+                        border-radius: 12px; border: 3px solid #22c55e; }
+    .quality-checks { text-align: left; margin-top: 10px; }
+    .qcheck { display: flex; align-items: center; gap: .4rem; font-size: .82rem; padding: .25rem 0; }
+    .qcheck.pass { color: #166534; } .qcheck.warn { color: #92400e; } .qcheck.fail { color: #991b1b; }
+
+    /* Buttons */
+    .btn { display: block; width: 100%; padding: 11px; border-radius: 10px;
+           font-weight: 700; font-size: .92rem; cursor: pointer; border: none;
+           transition: all .2s; margin-bottom: 8px; }
+    .btn-primary { background: linear-gradient(135deg,#1a6b3c,#22c55e); color: white;
+                   box-shadow: 0 4px 12px rgba(26,107,60,.25); }
+    .btn-primary:hover:not(:disabled) { transform: translateY(-1px); }
+    .btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+    .btn-secondary { background: #f3f4f6; color: #374151; }
+    .btn-secondary:hover { background: #e5e7eb; }
+
+    .status-text { font-size: .95rem; font-weight: 600; color: #111827; margin-bottom: 4px; }
+    .status-sub  { font-size: .8rem; color: #6b7280; margin-bottom: 14px; min-height: 34px; }
+
+    .alert { border-radius: 10px; padding: 10px 14px; margin-bottom: 12px;
+             font-size: .8rem; text-align: left; display: none; }
+    .alert-error   { background: #fef2f2; border: 1.5px solid #fca5a5; color: #991b1b; }
+    .alert-success { background: #f0fdf4; border: 1.5px solid #86efac; color: #166534; }
+    .alert-info    { background: #eff6ff; border: 1.5px solid #93c5fd; color: #1e40af; }
+
+    .secure-note { font-size: .7rem; color: #9ca3af; margin-top: 12px; }
+    .secure-note .green { color: #22c55e; }
+    code { font-family: monospace; font-size: .75rem; word-break: break-all; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <img class="logo"
+       src="https://raw.githubusercontent.com/kevinmainamuya/image-storage/refs/heads/main/MUST.png"
+       alt="MUST" onerror="this.style.display='none'">
+  <h1>MUST Biometric</h1>
+  <p class="sub" id="mode-subtitle">Loading…</p>
+
+  <div class="student-card" id="student-card">
+    <div class="name"   id="sname">—</div>
+    <div class="number" id="snumber">—</div>
+  </div>
+
+  <div class="alert alert-info"    id="info-box"></div>
+  <div class="alert alert-error"   id="error-box"></div>
+  <div class="alert alert-success" id="success-box"></div>
+
+  <!-- ── FINGERPRINT REGISTRATION UI ── -->
+  <div id="fp-ui">
+    <div class="sensor-wrap" id="fp-sensor">
+      <span class="fp-icon" id="fp-sensor-icon">☝</span>
+    </div>
+    <p class="status-text" id="fp-status">Ready</p>
+    <p class="status-sub"  id="fp-sub">Tap the button, then place your finger on the sensor.</p>
+    <button class="btn btn-primary" id="fp-scan-btn" onclick="startFpScan()">Scan Fingerprint</button>
+    <button class="btn btn-secondary" id="fp-retry-btn" onclick="resetFp()" style="display:none;">Try Again</button>
+  </div>
+
+  <!-- ── FACE CAPTURE UI ── -->
+  <div id="face-ui" style="display:none;">
+    <div id="face-step1">
+      <div class="alert alert-info" id="face-guide-tip" style="display:block;text-align:left;">
+        <strong>Instructions:</strong> Position the student's face inside the oval under good lighting.
+        Tap <strong>Capture (3s)</strong>.
+      </div>
+      <div class="camera-wrap" id="camera-wrap">
+        <video id="face-video" autoplay playsinline muted></video>
+        <div class="face-oval-overlay"><div class="face-oval" id="face-oval"></div></div>
+        <div class="face-instr" id="face-instr">Position face inside the oval</div>
+        <div class="countdown-overlay" id="cd-overlay">
+          <div class="cd-ring">
+            <svg viewBox="0 0 76 76" width="76" height="76">
+              <circle class="ring-bg" cx="38" cy="38" r="33"/>
+              <circle class="ring-fill" cx="38" cy="38" r="33" id="cd-ring-fill"/>
+            </svg>
+            <div class="cd-num" id="cd-num">3</div>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:8px;">
+        <button class="btn btn-primary" style="margin:0;flex:1;" onclick="startCountdown()">📷 Capture (3s)</button>
+        <button class="btn btn-secondary" style="margin:0;flex:0 0 auto;width:auto;padding:11px 14px;" onclick="switchCamera()" title="Switch camera">⟳</button>
+      </div>
+    </div>
+    <div id="face-step2" style="display:none;">
+      <div class="preview-wrap" id="preview-wrap"><img id="preview-img" src="" alt="Captured face">
+        <div class="quality-checks" id="quality-checks"></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:8px;">
+        <button class="btn btn-secondary" style="margin:0;flex:1;" onclick="retakePhoto()">↩ Retake</button>
+        <button class="btn btn-primary"   style="margin:0;flex:1;" onclick="saveFaceCapture()">✓ Save Photo</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── VERIFY (ATTENDANCE) UI ── -->
+  <div id="verify-ui" style="display:none;">
+    <div class="sensor-wrap" id="verify-sensor">
+      <span class="fp-icon" id="verify-sensor-icon">☝</span>
+    </div>
+    <p class="status-text" id="verify-status">Ready to verify</p>
+    <p class="status-sub"  id="verify-sub">
+      Tap the button below, then place your finger on the biometric sensor to mark attendance.
+    </p>
+    <button class="btn btn-primary" id="verify-btn" onclick="startVerify()">
+      🔍 Verify Identity
+    </button>
+    <button class="btn btn-secondary" id="verify-retry-btn" onclick="resetVerify()" style="display:none;">
+      Try Again
+    </button>
+  </div>
+
+  <button class="btn btn-secondary" id="done-btn" onclick="window.close()" style="display:none;">
+    Close / Return to App
+  </button>
+
+  <p class="secure-note">
+    <span class="green">🔒</span> Data is sent securely to the MUST Attendance System.
+  </p>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════════
+// URL Parameters — add selfReg and token detection
+// ══════════════════════════════════════════════════════════════
+var P              = new URLSearchParams(window.location.search);
+var MODE           = P.get('mode')           || 'fingerprint';
+var studentId      = P.get('studentId')      || '';
+var studentName    = P.get('studentName')    || '';
+var studentNum     = P.get('studentNumber')  || '';
+var fingerIndex    = parseInt(P.get('fingerIndex') || '1', 10);
+var gasOrigin      = P.get('gasOrigin')      || '';
+var credentialIds  = (P.get('credentialIds') || '').split(',').filter(Boolean);
+var serverChallenge = P.get('challenge')     || '';
+// Self-registration params
+var SELF_REG_MODE  = P.get('selfReg') === 'true';
+var SELF_REG_TOKEN = P.get('token')   || '';
+
+// ══════════════════════════════════════════════════════════════
+// GAS URL — needed to call backend from self-reg mode
+// The GAS web app URL must be embedded or passed as a param.
+// Add &gasUrl=YOUR_GAS_WEBAPP_URL to the link generated by
+// BIO_generateSelfRegistrationToken, OR hardcode it below.
+// ══════════════════════════════════════════════════════════════
+// var GAS_URL = P.get('gasUrl') || 'YOUR_GAS_WEBAPP_URL_HERE';
+var GAS_URL = P.get('gasUrl') || 'https://script.google.com/a/*/macros/s/AKfycbxJzcOZ4MX_HFj50tByQdSpfSNBelpFNMq99aYk1zeHl0aqaR_-9PYlJYfmSCA3UvYVFA/exec';
+
+// ══════════════════════════════════════════════════════════════
+// Init
+// ══════════════════════════════════════════════════════════════
+window.addEventListener('load', function () {
+  if (studentName || studentNum) {
+    document.getElementById('student-card').style.display = 'block';
+    document.getElementById('sname').textContent   = studentName || '—';
+    document.getElementById('snumber').textContent = studentNum ? 'No: ' + studentNum : '';
+  }
+
+  if (MODE === 'location') {
+    // ── Location mode ─────────────────────────────────────────────────────
+    _runLocationMode();
+
+  } else if (MODE === 'face') {
+    // ── Face mode (handles: attendance, self-reg, admin capture) ─────────
+    var ATTENDANCE_MODE = P.get('attendanceMode') === 'true';
+    var FACE_SELF_REG   = P.get('selfReg')        === 'true';
+    var FACE_SELF_TOKEN = P.get('faceToken')      || '';
+
+    document.getElementById('fp-ui').style.display   = 'none';
+    document.getElementById('face-ui').style.display = 'block';
+
+    // Always show student card in face flows
+    document.getElementById('student-card').style.display = 'block';
+    document.getElementById('sname').textContent   = studentName || '—';
+    document.getElementById('snumber').textContent = studentNum ? 'No: ' + studentNum : '';
+
+    if (ATTENDANCE_MODE) {
+      // ── Attendance verification ────────────────────────────────────────
+      document.getElementById('mode-subtitle').textContent = 'Face ID Verification';
+
+      var guideEl = document.getElementById('face-guide-tip');
+      if (guideEl) {
+        guideEl.textContent =
+          'Look directly at the camera. This verifies your identity for attendance.';
+      }
+
+      var captureBtn = document.getElementById('face-capture-btn');
+      if (captureBtn) {
+        captureBtn.textContent = 'Verify Face';
+      }
+
+    } else if (FACE_SELF_REG && FACE_SELF_TOKEN) {
+      // ── Face self-registration ─────────────────────────────────────────
+      document.getElementById('mode-subtitle').textContent = 'Face ID Self-Registration';
+
+    } else {
+      // ── Admin/manual capture ───────────────────────────────────────────
+      document.getElementById('mode-subtitle').textContent = 'Face ID Capture';
+    }
+
+    // Start camera for all face scenarios
+    startCamera();
+
+  } else if (MODE === 'verify') {
+    // ── Identity verification (non-face flow) ─────────────────────────────
+    document.getElementById('mode-subtitle').textContent = 'Identity Verification';
+    document.getElementById('fp-ui').style.display     = 'none';
+    document.getElementById('verify-ui').style.display = 'block';
+    checkVerifyReady();
+
+  } else {
+    // ── Fingerprint registration ─────────────────────────────────────────
+    if (SELF_REG_MODE && SELF_REG_TOKEN) {
+      document.getElementById('mode-subtitle').textContent = 'Fingerprint Self-Registration';
+      _validateTokenThenShowScanUI();
+    } else {
+      document.getElementById('mode-subtitle').textContent = 'Fingerprint Registration';
+      checkWebAuthn();
+    }
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+// Self-registration: validate token via GAS before showing scan
+// ══════════════════════════════════════════════════════════════
+function _validateTokenThenShowScanUI() {
+  document.getElementById('fp-status').textContent = 'Validating your registration link…';
+  document.getElementById('fp-scan-btn').disabled  = true;
+
+  var validateUrl = GAS_URL +
+    '?action=validateSelfRegToken' +
+    '&token='        + encodeURIComponent(SELF_REG_TOKEN) +
+    '&callback=_gasValidateCallback';
+
+  // For validation we actually need to READ the response, so we use
+  // a <script> JSONP-style approach — GAS supports this via callback param.
+  // We wrap the response in a JS function call.
+  window._gasValidateCallback = function (result) {
+    if (result && result.valid) {
+      studentId   = result.studentId;
+      studentName = result.studentName;
+      studentNum  = result.studentNumber;
+      fingerIndex = result.fingerIndex || 1;
+
+      document.getElementById('student-card').style.display = 'block';
+      document.getElementById('sname').textContent   = studentName;
+      document.getElementById('snumber').textContent = 'No: ' + studentNum;
+
+      document.getElementById('fp-status').textContent = 'Ready to scan';
+      document.getElementById('fp-scan-btn').disabled  = false;
+
+      showInfo(
+        '<strong>Hi ' + studentName + '</strong><br>' +
+        'Scan <strong>your own finger</strong> when prompted.<br>' +
+        'This registers YOUR fingerprint to YOUR student account.'
+      );
+      checkWebAuthn();
+    } else {
+      disableFp(
+        'Registration link invalid',
+        ((result && result.message) || 'This link has expired or already been used.') +
+        '<br>Ask your administrator to generate a new link.'
+      );
+    }
+  };
+
+  // Timeout fallback — if script never loads
+  var callbackFired = false;
+  var origCallback  = window._gasValidateCallback;
+  window._gasValidateCallback = function (result) {
+    callbackFired = true;
+    origCallback(result);
+  };
+
+  setTimeout(function () {
+    if (!callbackFired) {
+      console.warn('JSONP validation timed out — proceeding with fallback');
+      document.getElementById('fp-status').textContent = 'Ready (link validation skipped)';
+      document.getElementById('fp-scan-btn').disabled  = false;
+      showInfo(
+        '<strong>Note:</strong> Could not validate link (network issue).<br>' +
+        'Proceed — if the link is invalid, registration will fail when saving.'
+      );
+      checkWebAuthn();
+    }
+  }, 6000);
+
+  // Inject a <script> tag — this is true JSONP and works cross-origin
+  var script  = document.createElement('script');
+  script.src  = validateUrl;
+  script.onerror = function () {
+    if (!callbackFired) {
+      // Script failed to load — fallback
+      console.warn('JSONP script load error — proceeding with fallback');
+      document.getElementById('fp-status').textContent = 'Ready (offline validation)';
+      document.getElementById('fp-scan-btn').disabled  = false;
+      checkWebAuthn();
+    }
+  };
+  document.head.appendChild(script);
+}
+  
+
+// ══════════════════════════════════════════════════════════════
+// VERIFY MODE — WebAuthn Assertion (attendance marking)
+// navigator.credentials.get() — proves the student's device holds
+// the private key matching the registered credential.
+// ══════════════════════════════════════════════════════════════
+function checkVerifyReady() {
+  if (!window.PublicKeyCredential || !navigator.credentials || !navigator.credentials.get) {
+    disableVerify('WebAuthn not supported in this browser.',
+                  'Use Chrome or Samsung Internet on Android, or Safari on iOS 14+.');
+    return;
+  }
+  if (credentialIds.length === 0) {
+    disableVerify('No registered credential found.',
+                  'The student has not completed biometric registration. ' +
+                  'Please register fingerprint in the Biometric Management section first.');
+    return;
+  }
+  if (!serverChallenge) {
+    disableVerify('No challenge provided.',
+                  'This page should be opened from within the MUST Attendance System.');
+    return;
+  }
+  // All checks passed — ready to verify
+}
+
+function startVerify() {
+  if (credentialIds.length === 0 || !serverChallenge) {
+    showError('Missing credential IDs or challenge. Return to app and try again.');
+    return;
+  }
+
+  hideAll();
+  setVerifySensor('scanning', '☝');
+  document.getElementById('verify-status').textContent = 'Waiting for fingerprint…';
+  document.getElementById('verify-sub').textContent    = 'Place your finger on the biometric sensor now.';
+  document.getElementById('verify-btn').disabled       = true;
+  document.getElementById('verify-retry-btn').style.display = 'none';
+
+  // Decode the challenge from base64
+  var challengeBytes = b64ToBuf(serverChallenge);
+
+  // Build allowCredentials list from registered credential IDs
+  var allowCredentials = credentialIds.map(function (credId) {
+    return { id: b64ToBuf(credId), type: 'public-key' };
+  });
+
+  navigator.credentials.get({
+    publicKey: {
+      challenge         : challengeBytes,
+      allowCredentials  : allowCredentials,
+      userVerification  : 'required',   // must scan finger, not just presence
+      rpId              : window.location.hostname,
+      timeout           : 60000
+    }
+  })
+  .then(function (assertion) { onVerifySuccess(assertion); })
+  .catch(function (err)      { onVerifyError(err); });
+}
+
+function onVerifySuccess(assertion) {
+  setVerifySensor('success', '✓');
+  document.getElementById('verify-status').textContent = 'Identity verified!';
+  document.getElementById('verify-sub').textContent    = 'Sending to MUST Attendance…';
+
+  var credentialId = bufToB64(assertion.rawId);
+  var signature    = bufToB64(assertion.response.signature);
+  var clientData   = bufToB64(assertion.response.clientDataJSON);
+  var authData     = bufToB64(assertion.response.authenticatorData);
+
+  var signCount = 0;
+  try {
+    var view  = new DataView(assertion.response.authenticatorData);
+    signCount = view.getUint32(33, false);
+  } catch (e) {}
+
+  var msg = {
+    type        : 'MUST_BIO_SUCCESS',
+    mode        : 'verify',
+    studentId   : studentId,
+    credentialId: credentialId,
+    signature   : signature,
+    clientData  : clientData,
+    authData    : authData,
+    signCount   : signCount,
+    verifiedAt  : new Date().toISOString()
+  };
+
+  // 1. Store in sessionStorage BEFORE closing — parent reads this
+  try { sessionStorage.setItem('MUST_BIO_RESULT', JSON.stringify(msg)); } catch(e) {}
+
+  // 2. Attempt postMessage to parent
+  var posted = false;
+  if (window.opener && !window.opener.closed) {
+    try {
+      window.opener.postMessage(msg, isAllowedOrigin(gasOrigin) ? gasOrigin : '*');
+      // Also store in PARENT's sessionStorage directly (same-origin won't work
+      // cross-origin, but postMessage above handles it)
+      posted = true;
+    } catch(e) {}
+  }
+
+  // 3. Show success — do NOT auto-close
+  // Instead show a clear "Return to app" message and let visibilitychange handle it
+  showSuccess(
+    '✓ <strong>Fingerprint verified!</strong><br>' +
+    '<code style="font-size:.75rem">' + credentialId.substring(0, 24) + '…</code><br><br>' +
+    '<strong style="font-size:1rem">↩ Return to the MUST Attendance tab now.</strong><br>' +
+    '<small style="color:#6b7280">Your result will be captured automatically when you switch tabs.</small>'
+  );
+  document.getElementById('verify-status').textContent = '✓ Verified — return to app tab';
+  document.getElementById('verify-sub').textContent    = '';
+  document.getElementById('done-btn').style.display    = 'block';
+  document.getElementById('done-btn').textContent      = 'Done — close this tab';
+  document.getElementById('done-btn').onclick          = function () { window.close(); };
+
+  // Do NOT call window.close() here — keep popup alive so parent can read sessionStorage
+}
+
+function onVerifyError(err) {
+  setVerifySensor('error', '✕');
+  document.getElementById('verify-status').textContent = 'Verification failed';
+  setTimeout(function () { setVerifySensor('', '☝'); }, 1500);
+
+  var msgs = {
+    NotAllowedError  : 'Cancelled or timed out — tap Try Again and place finger promptly.',
+    InvalidStateError: 'Authentication error — try again.',
+    NotSupportedError: 'Biometric sensor unavailable — check Settings → Security → Fingerprint.',
+    SecurityError    : 'Security error — ensure you are using the HTTPS GitHub Pages URL.'
+  };
+  var fix = msgs[err.name] || ('Error: ' + err.name);
+  showError(fix);
+
+  document.getElementById('verify-retry-btn').style.display = 'block';
+  document.getElementById('verify-btn').disabled = false;
+  document.getElementById('done-btn').style.display = 'block';
+
+  postBack({
+    type        : 'MUST_BIO_ERROR',
+    mode        : 'verify',
+    studentId   : studentId,
+    errorName   : err.name,
+    errorMessage: err.message,
+    verifiedAt  : new Date().toISOString()
+  });
+}
+
+function resetVerify() {
+  setVerifySensor('', '☝');
+  document.getElementById('verify-status').textContent = 'Ready to verify';
+  document.getElementById('verify-sub').textContent    =
+    'Tap the button below, then place your finger on the sensor.';
+  document.getElementById('verify-btn').disabled             = false;
+  document.getElementById('verify-retry-btn').style.display = 'none';
+  document.getElementById('done-btn').style.display         = 'none';
+  hideAll();
+}
+
+function setVerifySensor(cls, icon) {
+  var w = document.getElementById('verify-sensor');
+  w.className = 'sensor-wrap' + (cls ? ' ' + cls : '');
+  document.getElementById('verify-sensor-icon').textContent = icon;
+}
+
+function disableVerify(title, fix) {
+  showError('<strong>' + title + '</strong><br>' + fix);
+  document.getElementById('verify-btn').disabled = true;
+}
+
+
+// ══════════════════════════════════════════════════════════════
+// FINGERPRINT REGISTRATION — WebAuthn (unchanged from v2)
+// ══════════════════════════════════════════════════════════════
+function checkWebAuthn() {
+  if (!window.PublicKeyCredential || !navigator.credentials) {
+    disableFp('WebAuthn not supported.', 'Use Chrome or Samsung Internet on Android.');
+    return;
+  }
+  PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()
+    .then(function (ok) {
+      if (!ok) {
+        disableFp('No biometric enrolled on this device.',
+                  'Go to Settings → Security → Fingerprint and enroll your fingerprint first.');
+      } else {
+        // Show a clear instruction before scan
+        showInfo(
+          '<strong>Important:</strong> When prompted, tap <strong>Continue</strong> ' +
+          'and use your <strong>fingerprint sensor</strong> — not your PIN or face. ' +
+          'If asked to "save to Google Password Manager", choose ' +
+          '<strong>"This device only"</strong> or <strong>"Use a different device"</strong> ' +
+          'and select your fingerprint option.'
+        );
+      }
+    })
+    .catch(function () {});
+}
+
+function startFpScan() {
+  hideAll();
+  setSensor('fp-sensor','scanning', '☝');
+  document.getElementById('fp-status').textContent = 'Waiting for fingerprint…';
+  document.getElementById('fp-sub').textContent    = 'Place your finger on the biometric sensor.';
+  document.getElementById('fp-scan-btn').disabled  = true;
+  document.getElementById('fp-retry-btn').style.display = 'none';
+
+  var challenge = new Uint8Array(32);
+  window.crypto.getRandomValues(challenge);
+  var chalB64 = bufToB64(challenge);
+  var userId  = new TextEncoder().encode(studentId || 'unknown');
+
+  navigator.credentials.create({
+    publicKey: {
+      challenge : challenge,
+      rp        : {
+        name: 'MUST Attendance System',
+        id  : window.location.hostname
+      },
+      user: {
+        id         : userId,
+        name       : studentNum  || studentId,
+        displayName: studentName || 'Student'
+      },
+      pubKeyCredParams: [
+        { alg: -7,   type: 'public-key' },  // ES256
+        { alg: -257, type: 'public-key' }   // RS256
+      ],
+      authenticatorSelection: {
+        authenticatorAttachment: 'platform',  // device sensor only, no roaming keys
+        userVerification       : 'required',  // must use biometric/PIN
+        residentKey            : 'discouraged', // avoid synced passkeys
+        requireResidentKey     : false
+      },
+      // 'direct' attestation so we can inspect the authenticator's flags
+      // to detect if it's device-bound or synced
+      attestation: 'direct',
+      timeout    : 60000,
+      // Exclude any previously registered credentials for this student
+      // (passed in via URL param if available)
+      excludeCredentials: _buildExcludeList()
+    }
+  })
+  .then(function (c) { onFpSuccess(c, chalB64); })
+  .catch(function (e) { onFpError(e); });
+}
+
+function _buildExcludeList() {
+  // Exclude existing credentials so re-registration is blocked on same device
+  // credentialIds is already parsed from URL params at top of file
+  return credentialIds.map(function (id) {
+    try { return { id: b64ToBuf(id), type: 'public-key', transports: ['internal'] }; }
+    catch (e) { return null; }
+  }).filter(Boolean);
+}
+
+// ══════════════════════════════════════════════════════════════
+// Override onFpSuccess to use self-reg finalization when in token mode
+// ══════════════════════════════════════════════════════════════
+function onFpSuccess(credential, chalB64) {
+  setSensor('fp-sensor', 'success', '✓');
+
+  var credId = bufToB64(credential.rawId);
+  var pubKey = '';
+  try { pubKey = bufToB64(credential.response.getPublicKey()); } catch (e) {}
+  var attest  = bufToB64(credential.response.attestationObject);
+  var cdJson  = bufToB64(credential.response.clientDataJSON);
+
+  // Parse authenticator data flags
+  var authDataBuf = credential.response.getAuthenticatorData
+    ? credential.response.getAuthenticatorData() : null;
+
+  var flags = null, isSynced = false, isDeviceBound = true;
+
+  if (authDataBuf) {
+    var view      = new DataView(authDataBuf);
+    var flagByte  = view.getUint8(32);
+    var signCount = view.getUint32(33, false);
+    flags = {
+      userPresent    : (flagByte & 0x01) !== 0,
+      userVerified   : (flagByte & 0x04) !== 0,
+      backupEligible : (flagByte & 0x08) !== 0,  // BE
+      backupState    : (flagByte & 0x10) !== 0,  // BS
+      signCount      : signCount
+    };
+    isSynced      = flags.backupEligible || flags.backupState;
+    isDeviceBound = !isSynced;
+    console.log('Auth flags — UV:' + flags.userVerified +
+                ' BE:' + flags.backupEligible +
+                ' BS:' + flags.backupState);
+  }
+
+  var alg = '—';
+  try {
+    var a = credential.response.getPublicKeyAlgorithm
+      ? credential.response.getPublicKeyAlgorithm() : null;
+    if (a === -7) alg = 'ES256'; else if (a === -257) alg = 'RS256';
+  } catch (e) {}
+
+  var quality = Math.min(98, 65 + Math.floor(credential.rawId.byteLength / 3));
+
+  var bioPayload = {
+    type          : 'MUST_BIO_SUCCESS',
+    mode          : 'fingerprint',
+    studentId     : studentId,
+    fingerIndex   : fingerIndex,
+    credentialId  : credId,
+    publicKey     : pubKey,
+    attestation   : attest,
+    clientDataJSON: cdJson,
+    challenge     : chalB64,
+    algorithm     : alg,
+    authFlags     : flags,
+    isDeviceBound : isDeviceBound,
+    isSynced      : isSynced,
+    quality       : quality,
+    capturedAt    : new Date().toISOString(),
+    rpId          : window.location.hostname
+  };
+
+  var syncWarning = isSynced
+    ? '<br><span style="color:#d97706;">⚠️ Synced passkey (Google PM)</span>'
+    : '<br><span style="color:#16a34a;">✓ Device-bound credential</span>';
+
+if (SELF_REG_MODE && SELF_REG_TOKEN) {
+    document.getElementById('fp-status').textContent = 'Saving your fingerprint…';
+    setSensor('fp-sensor', 'scanning', '⏳');
+
+    try {
+      var slimPayload = {
+        credentialId  : bioPayload.credentialId,
+        publicKey     : bioPayload.publicKey,
+        quality       : bioPayload.quality,
+        isDeviceBound : bioPayload.isDeviceBound,
+        isSynced      : bioPayload.isSynced      || false,
+        capturedAt    : bioPayload.capturedAt,
+        algorithm     : bioPayload.algorithm,
+        authFlags     : bioPayload.authFlags
+      };
+
+      var payloadJson    = JSON.stringify(slimPayload);
+      var payloadEncoded = btoa(unescape(encodeURIComponent(payloadJson)));
+
+      var gasStoreUrl = GAS_URL +
+        '?action=storeSelfRegResult' +
+        '&token='   + encodeURIComponent(SELF_REG_TOKEN) +
+        '&payload=' + encodeURIComponent(payloadEncoded);
+
+      // ── Use <img> src trick — always works cross-origin, no CORS issues,
+      // follows redirects natively, no preflight. GAS receives the GET request.
+      var ping       = new Image();
+      var pingDone   = false;
+
+      function onPingDone(success) {
+        if (pingDone) return;
+        pingDone = true;
+
+        // Whether the img load succeeded or errored, the request was sent.
+        // GAS returns JSON which isn't a valid image, so onerror always fires.
+        // That's expected — the request still arrived at doGet.
+        setSensor('fp-sensor', 'success', '✓');
+        showSuccess(
+          '✓ <strong>Fingerprint scanned successfully!</strong><br><br>' +
+          syncWarning +
+          '<br><br>' +
+          '<strong>What happens next:</strong><br>' +
+          'Your fingerprint has been sent to the MUST system.<br>' +
+          'The ICT staff member will see it confirmed on their screen within a few seconds.<br><br>' +
+          '<strong>You may close this tab now.</strong>'
+        );
+        document.getElementById('fp-status').textContent  = 'Done ✓';
+        document.getElementById('fp-scan-btn').style.display  = 'none';
+        document.getElementById('fp-retry-btn').style.display = 'none';
+        document.getElementById('done-btn').style.display     = 'block';
+      }
+
+      ping.onload  = function () { onPingDone(true);  };
+      ping.onerror = function () { onPingDone(false); }; // expected — GAS returns JSON not image
+
+      // Set a timeout in case neither event fires (some browsers suppress both for opaque)
+      setTimeout(function () { onPingDone(false); }, 8000);
+
+      ping.src = gasStoreUrl;
+
+    } catch (encodeErr) {
+      setSensor('fp-sensor', 'error', '✕');
+      showError('Encoding error: ' + encodeErr.message);
+      document.getElementById('fp-retry-btn').style.display = 'block';
+      document.getElementById('done-btn').style.display     = 'block';
+    }
+
+  } else {
+    // Admin popup path — unchanged
+    postBack(bioPayload);
+    showSuccess(
+      '✓ Fingerprint captured<br>' +
+      'Credential: <code>' + credId.substring(0, 28) + '…</code><br>' +
+      'Algorithm: ' + alg +
+      (flags ? ' | UV:' + flags.userVerified : '') +
+      syncWarning +
+      '<br>Return to the MUST Attendance System tab.'
+    );
+    document.getElementById('done-btn').style.display = 'block';
+  }
+}
+
+function onFpError(err) {
+  setSensor('fp-sensor', 'error', '✕');
+  document.getElementById('fp-status').textContent = 'Scan failed';
+  var msgs = { NotAllowedError:'Cancelled or timed out — tap Try Again.',
+               InvalidStateError:'Credential exists — use a different finger.',
+               NotSupportedError:'Sensor unavailable — check Settings → Fingerprint.',
+               SecurityError:'Security error — use the HTTPS GitHub Pages URL.' };
+  showError(msgs[err.name] || err.name);
+  setTimeout(function () { setSensor('fp-sensor','','☝'); }, 1500);
+  document.getElementById('fp-retry-btn').style.display = 'block';
+  document.getElementById('done-btn').style.display = 'block';
+  postBack({ type:'MUST_BIO_ERROR', mode:'fingerprint', studentId, fingerIndex,
+             errorName:err.name, errorMessage:err.message, capturedAt:new Date().toISOString() });
+}
+
+function resetFp() {
+  setSensor('fp-sensor','','☝');
+  document.getElementById('fp-status').textContent = 'Ready';
+  document.getElementById('fp-sub').textContent = 'Tap the button, then place your finger.';
+  document.getElementById('fp-scan-btn').disabled = false;
+  document.getElementById('fp-retry-btn').style.display = 'none';
+  document.getElementById('done-btn').style.display = 'none';
+  hideAll();
+}
+
+function disableFp(title, fix) {
+  showError('<strong>' + title + '</strong><br>' + fix);
+  document.getElementById('fp-scan-btn').disabled = true;
+}
+
+// ══════════════════════════════════════════════════════════════
+// FACE CAPTURE (unchanged from v2)
+// ══════════════════════════════════════════════════════════════
+var faceStream = null, cameraFacing = 'user', capturedImg = null, capturedQuality = 0, alignTimer = null;
+
+function startCamera() {
+  stopCamera();
+  navigator.mediaDevices.getUserMedia({
+    video: { facingMode: cameraFacing, width: { ideal: 720 }, height: { ideal: 960 } }
+  })
+  .then(function (stream) {
+    faceStream = stream;
+    var v = document.getElementById('face-video');
+    v.srcObject = stream; v.play();
+    document.getElementById('camera-wrap').style.display = 'block';
+    startAlignCheck(v);
+  })
+  .catch(function (err) {
+    var msg = 'Cannot access camera: ' + err.message + '<br><br>';
+    if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError')
+      msg += '<strong>Fix:</strong> Tap the camera icon in the address bar and select Allow, then refresh.';
+    else if (err.name === 'NotFoundError') msg += '<strong>Fix:</strong> No camera found.';
+    else if (err.name === 'NotReadableError') msg += '<strong>Fix:</strong> Camera in use — close other apps.';
+    showError(msg);
+    document.getElementById('face-guide-tip').style.display = 'none';
+    document.getElementById('done-btn').style.display = 'block';
+    postBack({ type:'MUST_BIO_ERROR', mode:'face', studentId,
+               errorName:err.name, errorMessage:err.message, capturedAt:new Date().toISOString() });
+  });
+}
+
+function stopCamera() {
+  if (faceStream) { faceStream.getTracks().forEach(function(t){t.stop();}); faceStream = null; }
+  if (alignTimer)  { clearInterval(alignTimer); alignTimer = null; }
+}
+
+function switchCamera() { cameraFacing = cameraFacing==='user'?'environment':'user'; startCamera(); }
+
+function startAlignCheck(video) {
+  var canvas = document.createElement('canvas'), ctx = canvas.getContext('2d');
+  alignTimer = setInterval(function () {
+    if (!video.videoWidth) return;
+    canvas.width = 80; canvas.height = 80;
+    ctx.drawImage(video, video.videoWidth*.25, video.videoHeight*.10,
+                  video.videoWidth*.50, video.videoHeight*.60, 0, 0, 80, 80);
+    var data = ctx.getImageData(0,0,80,80).data, sum = 0;
+    for (var i=0;i<data.length;i+=4) sum+=(data[i]*299+data[i+1]*587+data[i+2]*114)/1000;
+    var avg = sum/(data.length/4), oval = document.getElementById('face-oval'), instr = document.getElementById('face-instr');
+    if (avg>50 && avg<215) { oval.classList.add('aligned'); instr.textContent = 'Hold still — tap Capture (3s)'; }
+    else { oval.classList.remove('aligned'); instr.textContent = avg<50?'Too dark — improve lighting':'Too bright / move back'; }
+  }, 500);
+}
+
+function startCountdown() {
+  var overlay = document.getElementById('cd-overlay'), numEl = document.getElementById('cd-num'),
+      ring    = document.getElementById('cd-ring-fill');
+  overlay.style.display = 'flex'; numEl.textContent = '3'; ring.style.strokeDashoffset = '0';
+  var count = 3;
+  var iv = setInterval(function () {
+    count--;
+    if (count<=0) { clearInterval(iv); overlay.style.display='none'; captureFrame(); }
+    else { numEl.textContent=String(count); ring.style.strokeDashoffset=String(220*(1-count/3)); }
+  }, 1000);
+}
+
+function captureFrame() {
+  var video = document.getElementById('face-video');
+  if (!video.videoWidth) { showError('Camera not ready — tap Capture again.'); return; }
+  var maxW = Math.min(video.videoWidth, 720), canvas = document.createElement('canvas');
+  canvas.width = maxW; canvas.height = Math.round(video.videoHeight*(maxW/video.videoWidth));
+  canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+  capturedImg = canvas.toDataURL('image/jpeg', 0.85);
+  capturedQuality = assessQuality(canvas);
+  stopCamera();
+  document.getElementById('face-step1').style.display = 'none';
+  document.getElementById('face-step2').style.display = 'block';
+  document.getElementById('preview-wrap').style.display = 'block';
+  document.getElementById('preview-img').src = capturedImg;
+  renderQualityChecks(canvas);
+}
+
+function assessQuality(canvas) {
+  var ctx = canvas.getContext('2d'), data = ctx.getImageData(
+    Math.floor(canvas.width*.25), Math.floor(canvas.height*.10),
+    Math.floor(canvas.width*.50), Math.floor(canvas.height*.65)).data;
+  var total=0, mn=255, mx=0;
+  for (var i=0;i<data.length;i+=4) {
+    var l=Math.round((data[i]*299+data[i+1]*587+data[i+2]*114)/1000);
+    total+=l; if(l<mn)mn=l; if(l>mx)mx=l;
+  }
+  var avg=total/(data.length/4), contrast=mx-mn, score=0;
+  if(avg>60&&avg<195)score+=35; else if(avg>40&&avg<215)score+=15;
+  if(contrast>70)score+=30; else if(contrast>40)score+=15;
+  if(canvas.width>=480)score+=20; else if(canvas.width>=320)score+=10;
+  if(canvas.height>canvas.width)score+=15;
+  return Math.min(score,100);
+}
+
+function renderQualityChecks(canvas) {
+  var q = capturedQuality;
+  var checks = [
+    { label:'Resolution ('+canvas.width+'×'+canvas.height+')', pass:canvas.width>=480, warn:canvas.width>=320 },
+    { label:'Portrait orientation', pass:canvas.height>canvas.width, warn:true },
+    { label:'Overall quality: '+q+'%', pass:q>=70, warn:q>=50 }
+  ];
+  document.getElementById('quality-checks').innerHTML = checks.map(function(c){
+    var cls=c.pass?'pass':(c.warn?'warn':'fail'), ic=c.pass?'✓':(c.warn?'⚠':'✕');
+    return '<div class="qcheck '+cls+'"><span>'+ic+'</span><span>'+c.label+'</span></div>';
+  }).join('');
+}
+
+function retakePhoto() {
+  capturedImg = null; capturedQuality = 0;
+  document.getElementById('face-step1').style.display = 'block';
+  document.getElementById('face-step2').style.display = 'none';
+  document.getElementById('preview-wrap').style.display = 'none';
+  hideAll(); startCamera();
+}
+
+function saveFaceCapture() {
+  if (!capturedImg) { showError('No photo captured.'); return; }
+
+  var approxKB = Math.round(capturedImg.length * 0.75 / 1024);
+  if (approxKB > 900) {
+    showError('Photo too large (' + approxKB + ' KB). Tap Retake.');
+    return;
+  }
+
+  var FACE_SELF_REG   = P.get('selfReg')   === 'true';
+  var FACE_SELF_TOKEN = P.get('faceToken') || '';
+
+  if (FACE_SELF_REG && FACE_SELF_TOKEN) {
+    // ── Self-registration: send to GAS via <img> ping ─────────────────────
+    var slimPayload = {
+      imageData : capturedImg,
+      quality   : capturedQuality,
+      capturedAt: new Date().toISOString()
+    };
+
+    try {
+      var payloadJson    = JSON.stringify(slimPayload);
+      var payloadEncoded = btoa(unescape(encodeURIComponent(payloadJson)));
+
+      var gasStoreUrl = GAS_URL +
+        '?action=storeFaceSelfRegResult' +
+        '&token='   + encodeURIComponent(FACE_SELF_TOKEN) +
+        '&payload=' + encodeURIComponent(payloadEncoded);
+
+      var ping = new Image();
+      ping.onload  = function () { _onFaceSelfRegSent(); };
+      ping.onerror = function () { _onFaceSelfRegSent(); }; // GAS returns JSON not img
+      setTimeout(function () { _onFaceSelfRegSent(); }, 8000);
+      ping.src = gasStoreUrl;
+
+    } catch (e) {
+      showError('Error sending face data: ' + e.message);
+    }
+
+  } else {
+    // ── Admin popup path: postBack to parent window ───────────────────────
+    postBack({
+      type       : 'MUST_BIO_SUCCESS',
+      mode       : 'face',
+      studentId  : studentId,
+      imageData  : capturedImg,
+      quality    : capturedQuality,
+      imageSizeKB: approxKB,
+      capturedAt : new Date().toISOString()
+    });
+    showSuccess(
+      '✓ Face photo captured<br>' +
+      'Quality: ' + capturedQuality + '% | Size: ~' + approxKB + ' KB<br>' +
+      'Return to the MUST Attendance System tab.'
+    );
+    document.getElementById('face-step2').style.display = 'none';
+    document.getElementById('done-btn').style.display   = 'block';
+  }
+}
+
+function _onFaceSelfRegSent() {
+  document.getElementById('face-step2').style.display = 'none';
+  showSuccess(
+    '✓ <strong>Face photo sent!</strong><br><br>' +
+    'Quality: ' + capturedQuality + '%<br><br>' +
+    '<strong>What happens next:</strong><br>' +
+    'Your photo has been sent to the MUST system.<br>' +
+    'The ICT staff will confirm registration on their screen.<br><br>' +
+    '<strong>You may close this tab now.</strong>'
+  );
+  document.getElementById('done-btn').style.display = 'block';
+}
+
+// ══════════════════════════════════════════════════════════════
+// Shared helpers
+// ══════════════════════════════════════════════════════════════
+function postBack(data) {
+  try { sessionStorage.setItem('MUST_BIO_RESULT', JSON.stringify(data)); } catch(e){}
+  if (window.opener && !window.opener.closed) {
+    try { window.opener.postMessage(data, isAllowedOrigin(gasOrigin) ? gasOrigin : '*'); } catch(e){}
+  }
+}
+
+function setSensor(id, cls, icon) {
+  var w = document.getElementById(id);
+  w.className = 'sensor-wrap' + (cls ? ' ' + cls : '');
+  document.getElementById(id + '-icon').textContent = icon;
+}
+
+function hideAll() {
+  ['info-box','error-box','success-box'].forEach(function(id){
+    document.getElementById(id).style.display='none';
+  });
+}
+function showError(html)   { var b=document.getElementById('error-box');   b.style.display='block'; b.innerHTML=html; }
+function showSuccess(html) { var b=document.getElementById('success-box'); b.style.display='block'; b.innerHTML=html; }
+
+// base64 ↔ ArrayBuffer
+function bufToB64(buf) {
+  if (!buf||buf.byteLength===0) return '';
+  var bytes=new Uint8Array(buf), bin='';
+  for(var i=0;i<bytes.byteLength;i++) bin+=String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
+function b64ToBuf(b64) {
+  try {
+    // Handle URL-safe base64 (replace - with + and _ with /)
+    var std = b64.replace(/-/g,'+').replace(/_/g,'/');
+    // Add padding if missing
+    while (std.length % 4) std += '=';
+    var binary = atob(std), buf = new Uint8Array(binary.length);
+    for(var i=0;i<binary.length;i++) buf[i]=binary.charCodeAt(i);
+    return buf.buffer;
+  } catch(e) { console.error('b64ToBuf error:', e, b64); return new ArrayBuffer(0); }
+}
+
+// Helpers for location verification
+// ══════════════════════════════════════════════════════════════
+// LOCATION MODE — get GPS and post back to parent window
+// ══════════════════════════════════════════════════════════════
+function _runLocationMode() {
+  // Replace card content with a minimal location UI
+  document.querySelector('.card').innerHTML =
+    '<img class="logo" ' +
+    'src="https://raw.githubusercontent.com/kevinmainamuya/image-storage/refs/heads/main/MUST.png" ' +
+    'alt="MUST" onerror="this.style.display=\'none\'">' +
+    '<h1 style="color:#1a6b3c;font-size:1.1rem;margin-bottom:4px;">MUST Attendance</h1>' +
+    '<p style="color:#6b7280;font-size:.82rem;margin-bottom:16px;">Location Verification</p>' +
+    '<div id="loc-body" style="text-align:center;padding:12px 0;">' +
+      '<div id="loc-spinner" style="width:52px;height:52px;border:4px solid #d1fae5;' +
+        'border-top-color:#1a6b3c;border-radius:50%;' +
+        'animation:spin 1s linear infinite;margin:0 auto 14px;"></div>' +
+      '<p id="loc-title" style="font-weight:700;color:#111827;margin-bottom:4px;">Detecting location…</p>' +
+      '<p id="loc-sub" style="color:#6b7280;font-size:.8rem;">' +
+        'Please allow location access when prompted.</p>' +
+    '</div>' +
+    '<style>@keyframes spin{to{transform:rotate(360deg)}}</style>';
+
+  if (!navigator.geolocation) {
+    document.getElementById('loc-title').textContent = 'Not supported';
+    document.getElementById('loc-sub').textContent   =
+      'This browser does not support geolocation. Use Chrome on Android.';
+    document.getElementById('loc-spinner').style.display = 'none';
+    postLocationBack(false, null, null, null,
+      'Geolocation not supported in this browser.');
+    return;
+  }
+
+  navigator.geolocation.getCurrentPosition(
+    function (pos) {
+      // Success
+      var lat = pos.coords.latitude;
+      var lng = pos.coords.longitude;
+      var acc = pos.coords.accuracy;
+
+      document.getElementById('loc-spinner').style.borderTopColor = '#22c55e';
+      document.getElementById('loc-spinner').style.animation = 'none';
+      document.getElementById('loc-spinner').innerHTML =
+        '<div style="width:52px;height:52px;display:flex;align-items:center;' +
+        'justify-content:center;font-size:1.8rem;color:#16a34a;' +
+        'border:3px solid #86efac;border-radius:50%;">✓</div>';
+      document.getElementById('loc-title').textContent = 'Location detected!';
+      document.getElementById('loc-title').style.color = '#16a34a';
+      document.getElementById('loc-sub').innerHTML =
+        lat.toFixed(5) + ', ' + lng.toFixed(5) +
+        '<br>Accuracy: ±' + Math.round(acc) + 'm' +
+        '<br><span style="color:#9ca3af;font-size:.75rem;">Returning to app…</span>';
+
+      postLocationBack(true, lat, lng, acc, null);
+
+      // Close popup after short delay so student can see the success state
+      setTimeout(function () { window.close(); }, 1800);
+    },
+    function (err) {
+      var msgs = {
+        1: 'Location permission denied.\n\nTap the location/lock icon in the browser address bar, select "Allow", then close and reopen this link.',
+        2: 'Location signal unavailable. Move to an open area or enable GPS in Settings.',
+        3: 'Location timed out. Ensure GPS is enabled and try again.'
+      };
+      var msg = msgs[err.code] || ('Location error: ' + err.message);
+
+      document.getElementById('loc-spinner').style.display = 'none';
+      document.getElementById('loc-title').textContent     = 'Location failed';
+      document.getElementById('loc-title').style.color     = '#dc2626';
+      document.getElementById('loc-sub').style.color       = '#6b7280';
+      document.getElementById('loc-sub').innerHTML         =
+        msg.replace(/\n/g, '<br>') +
+        '<br><br>' +
+        '<button onclick="window.location.reload()" ' +
+        'style="background:#1a6b3c;color:white;border:none;padding:8px 20px;' +
+        'border-radius:8px;font-size:.85rem;cursor:pointer;">Try Again</button>';
+
+      postLocationBack(false, null, null, null, msg);
+    },
+    {
+      enableHighAccuracy: true,
+      timeout           : 20000,   // 20 seconds — longer than the 8s parent timeout
+      maximumAge        : 0
+    }
+  );
+}
+
+function postLocationBack(success, latitude, longitude, accuracy, error) {
+  var msg = {
+    type     : 'MUST_LOCATION',
+    success  : success,
+    latitude : latitude,
+    longitude: longitude,
+    accuracy : accuracy,
+    error    : error
+  };
+  try {
+    sessionStorage.setItem('MUST_LOCATION_RESULT', JSON.stringify(msg));
+  } catch (e) {}
+  if (window.opener && !window.opener.closed) {
+    try {
+      window.opener.postMessage(
+        msg,
+        isAllowedOrigin(gasOrigin) ? gasOrigin : '*'
+      );
+    } catch (e) {
+      // If postMessage fails, try with wildcard
+      try { window.opener.postMessage(msg, '*'); } catch (e2) {}
+    }
+  }
+}
+
+// Add this once at the bottom of must-bio/index.html script block
+window.addEventListener('message', function (event) {
+  if (event.data && event.data.type === 'MUST_BIO_RESEND') {
+    // Re-send the last stored result to whoever asked
+    try {
+      var stored = sessionStorage.getItem('MUST_BIO_RESULT');
+      if (stored && window.opener && !window.opener.closed) {
+        window.opener.postMessage(JSON.parse(stored), '*');
+        console.log('RESEND: re-posted stored result');
+      } else {
+        console.log('RESEND: nothing stored yet');
+      }
+    } catch (e) {
+      console.warn('RESEND error:', e);
+    }
+  }
+});
+  
+</script>
+</body>
+</html>
